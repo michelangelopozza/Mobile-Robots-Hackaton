@@ -1,0 +1,9 @@
+# Ignora i file di log
+*.log
+
+# Ignora gli ambienti virtuali Python
+venv/
+.env
+
+# Ignora le cartelle degli editor di testo (es. VS Code)
+.vscode/
