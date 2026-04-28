@@ -10,12 +10,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 # 2. Ora Python capisce cosa significa "src" e gli import relativi funzioneranno!
 from src.map_api import MapAPI
-from src.governor_1 import runGovernor
+from src.governor import runGovernor
 
 def main():
     # 3. Percorso della mappa: ora che main.py è in src/, la mappa è nella sua stessa cartella
     current_dir = Path(__file__).resolve().parent
-    csv_path = current_dir / "map_001_seed1.csv"
+    csv_path = current_dir / "map_015_seed15.csv"
     
     if not csv_path.exists():
         print(f"Errore: Mappa non trovata in {csv_path}")
@@ -23,7 +23,7 @@ def main():
 
     # 4. Parametri Missione
     start_point = (3.0, 3.0)
-    target_point = (45.0, 45.0) 
+    target_point = (48.0, 46.0) 
     max_time = 1000000 #
 
     # 5. Inizializzazione API
