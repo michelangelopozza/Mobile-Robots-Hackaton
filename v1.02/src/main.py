@@ -15,7 +15,7 @@ from src.governor import runGovernor
 def main():
     # 3. Percorso della mappa: ora che main.py è in src/, la mappa è nella sua stessa cartella
     current_dir = Path(__file__).resolve().parent
-    csv_path = current_dir / "map_015_seed15.csv"
+    csv_path = current_dir / "map_050_seed50.csv"
     
     if not csv_path.exists():
         print(f"Errore: Mappa non trovata in {csv_path}")

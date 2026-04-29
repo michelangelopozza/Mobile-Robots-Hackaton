@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import heapq
 
-LOG = False
+LOG = True
 PLOT = True
 
 def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
@@ -31,10 +31,10 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
     world_map = {}
     world_map_stuck = {} 
     
-    # Variabili per la Macchina a Stati dello Scout
+
     scout_path = [] 
-    scout_state = "EXPLORING"  # Può essere "EXPLORING" o "RETREATING"
-    scout_history = [startPoint] # Memoria dei passi sicuri per la retromarcia
+    scout_state = "EXPLORING"  
+    scout_waypoints = [startPoint]
     retreat_target = None
     
     rover_path = []
@@ -49,7 +49,7 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
     
     while time_elapsed < maximumTime:
         
-        # Drone first
+
         if not droneArrived:
             
             targetDroneDistance = distance(currentDronePosition, targetPoint)
@@ -115,7 +115,7 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
                 elif drone_resting and stepResultDrone.battery_value >= 0.51:
                     drone_resting = False
                     
-        # then scout: searching a safe path
+
         elif droneArrived and not scoutArrived:
             
             targetScoutDistance = distance(currentScoutPosition, targetPoint)
@@ -123,28 +123,23 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
             if targetScoutDistance < 0.5:
                 scoutArrived = True
                 if LOG:
-                    print(f"[{time_elapsed:.1f}s] Scout arrivato! Stuck event mappati con successo.")
+                    print(f"[{time_elapsed:.1f}s] Scout arrivato! Binari puliti e pronti.")
             else:
-                # 1. Registra lo storico per poter fare retromarcia (salva una pos ogni 0.2 metri)
-                if not scout_history or distance(currentScoutPosition, scout_history[-1]) >= 0.2:
-                    scout_history.append(currentScoutPosition)
-
-                # -- STATO: RITIRATA (Torna indietro) --
                 if scout_state == "RETREATING":
-                    # Punta verso il nodo sicuro alle nostre spalle
                     angleScout = np.arctan2(retreat_target[1] - currentScoutPosition[1], retreat_target[0] - currentScoutPosition[0])
-                    
-                    # Se è arrivato al sicuro, riprende l'esplorazione
+
                     if distance(currentScoutPosition, retreat_target) < 0.2:
                         if LOG:
-                            print(f"[{time_elapsed:.1f}s] Scout in zona sicura. Fine retromarcia, ricalcolo rotto verso il target!")
+                            print(f"[{time_elapsed:.1f}s] Scout in zona sicura. Fine retromarcia, ricalcolo rotta verso il target!")
                         scout_state = "EXPLORING"
-                        scout_path = [] # Svuota il percorso per forzare il ricalcolo A*
+                        scout_path = []
                 
-                # -- STATO: ESPLORAZIONE --
                 elif scout_state == "EXPLORING":
+                    if not scout_waypoints or distance(currentScoutPosition, scout_waypoints[-1]) >= 0.2:
+                        scout_waypoints.append(currentScoutPosition)
+
                     if not scout_path:
-                        scout_path = get_robust_path(currentScoutPosition, targetPoint, world_map, world_map_stuck)
+                        scout_path = get_robust_path(currentScoutPosition, targetPoint, world_map, world_map_stuck, map_size=50)
                     
                     if scout_path:
                         nextNode = scout_path[0]
@@ -158,7 +153,6 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
                     else:
                         angleScout = np.arctan2(targetPoint[1] - currentScoutPosition[1], targetPoint[0] - currentScoutPosition[0])
                 
-                # Muove fisicamente lo scout
                 stepResultScout = mapApi_instance.step("scout", currentScoutPosition, velocityScout, angleScout)
                 step_calls += 1
                 
@@ -166,31 +160,23 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
                     currentScoutPosition[0] + stepResultScout.actual_velocity * np.cos(angleScout) * dt, 
                     currentScoutPosition[1] + stepResultScout.actual_velocity * np.sin(angleScout) * dt
                 )
-                
-                # -- CONTROLLO TRAPPOLE --
+
                 currentCell = (np.round(currentScoutPosition[0]), np.round(currentScoutPosition[1]))
-                
-                # Se sbatte mentre esplora, INNESCA LA RITIRATA
+
                 if scout_state == "EXPLORING" and stepResultScout.is_stuck and currentCell not in world_map_stuck:
                     world_map_stuck[currentCell] = True
                     stuck_events += 1
                     
-                    # Cerca un punto sicuro nello storico (circa 1 metro indietro, ovvero 5 salvataggi)
-                    idx_sicuro = max(0, len(scout_history) - 5)
-                    retreat_target = scout_history[idx_sicuro]
+                    idx_sicuro = max(0, len(scout_waypoints) - 6)
+                    retreat_target = scout_waypoints[idx_sicuro]
+                    
+                    scout_waypoints = scout_waypoints[:idx_sicuro + 1]
                     
                     scout_state = "RETREATING"
                     if LOG:
-                        print(f"[{time_elapsed:.1f}s] STUCK IN {currentCell}! Inserimento RETROMARCIA verso zona sicura...")
+                        print(f"[{time_elapsed:.1f}s] STUCK IN {currentCell}! Memoria tagliata, inizio retromarcia...")
     
-        # Rover
         elif scoutArrived and not roverArrived:
-            
-            if not rover_path:
-                if LOG:
-                    print("Rover: Generazione percorso di massima sicurezza...")
-                # CRITICO: Passiamo world_map_stuck e usiamo un peso enorme per quelle celle
-                rover_path = get_robust_path(currentRoverPosition, targetPoint, world_map, world_map_stuck, is_rover=True)
             
             targetRoverDistance = distance(currentRoverPosition, targetPoint)
             
@@ -202,12 +188,11 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
                 break 
                 
             else:
-                # Il Rover estrae il percorso netto calcolato sulle sventure dello Scout,
-                # ottenendo una linea pulita che non fa avanti e indietro.
                 if not rover_path:
                     if LOG:
-                        print("Il Rover parte ora seguendo la via sicura tracciata dallo Scout...")
-                    rover_path = get_robust_path(currentRoverPosition, targetPoint, world_map, world_map_stuck)
+                        print("Il Rover aggancia i binari sicuri dello Scout. Partenza!")
+                    rover_path = list(scout_waypoints)
+                    rover_path.append(targetPoint) 
                 
                 if rover_path:
                     nextNode = rover_path[0]
@@ -232,9 +217,11 @@ def runGovernor(mapApi_instance, startPoint, targetPoint, maximumTime):
                 rover_travel += stepResultRover.actual_velocity * dt
                 
                 currentCellRover = (np.round(currentRoverPosition[0]), np.round(currentRoverPosition[1]))
-                if currentCellRover in world_map_stuck:
+                
+                if stepResultRover.is_stuck:
+                    stuck_events += 1
                     if LOG:
-                        print(f"[{time_elapsed:.1f}s] DISASTRO FATALE! Il Rover è finito su uno Stuck Event in {currentCellRover}.")
+                        print(f"[{time_elapsed:.1f}s] DISASTRO FATALE! Il Rover si è incastrato in {currentCellRover}.")
                     reached_target = False
                     break 
                     
@@ -254,14 +241,13 @@ def distance(firstPoint, secondPoint):
     yDist = secondPoint[1] - firstPoint[1]
     return np.sqrt(xDist**2+yDist**2)
 
-def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, is_rover=False, map_size=50):
+def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, map_size=50):
     if world_map_stuck is None:
-        world_map_stuck = set() # Meglio usare un set per ricerche veloci
+        world_map_stuck = {} 
         
     start_node = (round(start_pos[0]), round(start_pos[1]))
     target_node = (round(target_pos[0]), round(target_pos[1]))
-    
-    # 1. OTTIMIZZAZIONE: Trova il nodo sicuro più vicino in una sola riga (veloce)
+
     if target_node not in world_map and world_map:
         target_node = min(world_map.keys(), key=lambda n: (n[0]-target_node[0])**2 + (n[1]-target_node[1])**2)
 
@@ -270,14 +256,11 @@ def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, is_r
 
     directions = [(0,1), (1,0), (0,-1), (-1,0), (1,1), (-1,1), (1,-1), (-1,-1)]
 
-    # 2. OTTIMIZZAZIONE PRESTAZIONALE: Pre-calcolo dell'Inflazione
-    # Invece di calcolarlo durante l'A*, creiamo subito un set con tutte le celle "pericolose"
     danger_zones = set()
-    for sx, sy in world_map_stuck:
+    for sx, sy in world_map_stuck.keys():
         for dx, dy in directions:
             danger_zones.add((sx + dx, sy + dy))
 
-    # Inizializzazione A*
     open_list = [(0, start_node)]
     came_from = {start_node: None}
     g_score = {start_node: 0.0}
@@ -295,15 +278,14 @@ def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, is_r
         for dx, dy in directions:
             neighbor = (current[0] + dx, current[1] + dy)
 
-            # BOUNDARY CHECK dinamico e CONTROLLO TRAPPOLA DIRETTA
             if not (0 <= neighbor[0] <= map_size and 0 <= neighbor[1] <= map_size):
                 continue
+            
             if neighbor in world_map_stuck:
                 continue
 
             step_cost = 1.0 if dx == 0 or dy == 0 else 1.414
-            
-            # 3. OTTIMIZZAZIONE: Controllo inflazione istantaneo O(1)
+
             terrain_penalty = 200.0 if neighbor in danger_zones else 0.0
             
             if neighbor in world_map and world_map[neighbor].get('safe', True):
@@ -319,7 +301,7 @@ def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, is_r
                 if slope > 20.0: 
                     terrain_penalty += 100.0
             else:
-                terrain_penalty += 5000.0 if is_rover else 50.0 
+                terrain_penalty += 500.0 
                 
             tentative_g_score = g_score[current] + step_cost + terrain_penalty
 
@@ -327,11 +309,9 @@ def get_robust_path(start_pos, target_pos, world_map, world_map_stuck=None, is_r
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g_score
                 
-                # Euristica
                 h_dist = ((neighbor[0] - target_node[0])**2 + (neighbor[1] - target_node[1])**2)**0.5
                 heapq.heappush(open_list, (tentative_g_score + (h_dist * 1.001), neighbor))
 
-    # Ricostruzione percorso
     if target_node not in came_from:
         return []
         
@@ -361,18 +341,18 @@ def plot_final_paths(world_map, world_map_stuck, global_timeline, target_point, 
         sx, sy = zip(*[frame[1] for frame in global_timeline])
         rx, ry = zip(*[frame[2] for frame in global_timeline])
         
-        ax.plot(dx, dy, 'b--', alpha=0.6, label='Percorso Drone')
-        ax.plot(sx, sy, color='orange', linestyle='-', alpha=0.8, linewidth=2, label='Esplorazione Scout (Con ritirate)')
-        ax.plot(rx, ry, 'g-', linewidth=4, label='Percorso Rover (Pulito)')
+        ax.plot(dx, dy, 'b--', alpha=0.6, label='Percorso Drone', zorder=1)
+        ax.plot(rx, ry, 'g-', linewidth=6, label='Percorso Rover (Esatta Copia)', zorder=2)
+        ax.plot(sx, sy, color='orange', linestyle='--', alpha=1.0, linewidth=2, label='Esplorazione Scout', zorder=3)
         
-        ax.plot(dx[0], dy[0], 'k^', markersize=15, label='Start')
+        ax.plot(dx[0], dy[0], 'k^', markersize=15, label='Start', zorder=4)
 
     if world_map_stuck:
         stuck_x = [pos[0] for pos in world_map_stuck.keys()]
         stuck_y = [pos[1] for pos in world_map_stuck.keys()]
-        ax.scatter(stuck_x, stuck_y, color='black', marker='X', s=150, linewidths=2, label='Stuck Scout (Evitati)')
+        ax.scatter(stuck_x, stuck_y, color='black', marker='X', s=150, linewidths=2, label='Stuck Scout (Evitati)', zorder=5)
 
-    ax.plot(target_point[0], target_point[1], 'g*', markersize=25, markeredgecolor='black', label='Target')
+    ax.plot(target_point[0], target_point[1], 'g*', markersize=25, markeredgecolor='black', label='Target', zorder=4)
     
     ax.set_xlim(-0.5, grid_size - 0.5)
     ax.set_ylim(-0.5, grid_size - 0.5)
